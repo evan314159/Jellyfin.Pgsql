@@ -28,13 +28,9 @@ internal sealed class PgSqlDesignTimeJellyfinDbFactory : IDesignTimeDbContextFac
         var optionsBuilder = new DbContextOptionsBuilder<JellyfinDbContext>();
         optionsBuilder.UseNpgsql(f => f.MigrationsAssembly(GetType().Assembly));
 
-        var provider = new PgSqlDatabaseProvider(null!, NullLoggerFactory.Instance);
-        var lockingBehavior = provider.CreateLockingBehavior(DatabaseLockingBehaviorTypes.NoLock);
-
         return new JellyfinDbContext(
             optionsBuilder.Options,
             NullLogger<JellyfinDbContext>.Instance,
-            provider,
-            lockingBehavior);
+            new PgSqlDatabaseProvider(null!, NullLoggerFactory.Instance));
     }
 }
