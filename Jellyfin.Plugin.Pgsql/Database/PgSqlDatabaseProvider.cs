@@ -9,9 +9,11 @@ using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Database.Implementations;
 using Jellyfin.Database.Implementations.DbConfiguration;
+using Jellyfin.Database.Implementations.Locking;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller.Configuration;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 
@@ -26,16 +28,18 @@ public sealed class PgSqlDatabaseProvider : IJellyfinDatabaseProvider
     private const string BackupFolderName = "PgsqlBackups";
     private readonly ILogger<PgSqlDatabaseProvider> _logger;
     private readonly IApplicationPaths _applicationPaths;
+    private readonly ILoggerFactory _loggerFactory;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="PgSqlDatabaseProvider"/> class.
     /// </summary>
     /// <param name="applicationPaths">Service to construct the backup paths.</param>
-    /// <param name="logger">A logger.</param>
-    public PgSqlDatabaseProvider(IApplicationPaths applicationPaths, ILogger<PgSqlDatabaseProvider> logger)
+    /// <param name="loggerFactory">The logger factory.</param>
+    public PgSqlDatabaseProvider(IApplicationPaths applicationPaths, ILoggerFactory loggerFactory)
     {
         _applicationPaths = applicationPaths;
-        _logger = logger;
+        _loggerFactory = loggerFactory;
+        _logger = _loggerFactory.CreateLogger<PgSqlDatabaseProvider>();
     }
 
     /// <inheritdoc/>
@@ -53,6 +57,7 @@ public sealed class PgSqlDatabaseProvider : IJellyfinDatabaseProvider
             .UseNpgsql(connectionBuilder.ToString(), pgSqlOptions =>
             {
                 pgSqlOptions.MigrationsAssembly(GetType().Assembly.FullName);
+                pgSqlOptions.ExecutionStrategy(dependencies => new NonRetryingExecutionStrategy(dependencies));
             });
 
         var enableSensitiveDataLogging = GetCustomDatabaseOption(customOptions, "EnableSensitiveDataLogging", e => e.Equals(bool.TrueString, StringComparison.OrdinalIgnoreCase), () => false);
@@ -236,6 +241,23 @@ public sealed class PgSqlDatabaseProvider : IJellyfinDatabaseProvider
         _logger.LogInformation("PostgreSQL database tables purged successfully");
     }
 
+    /// <inheritdoc/>
+    public IEntityFrameworkCoreLockingBehavior CreateLockingBehavior(DatabaseLockingBehaviorTypes lockingBehaviorType)
+    {
+        return lockingBehaviorType switch
+        {
+            DatabaseLockingBehaviorTypes.NoLock => new NoLockBehavior(_loggerFactory),
+            DatabaseLockingBehaviorTypes.Optimistic => new OptimisticLockBehavior(
+                medianFirstRetryDelay: TimeSpan.FromMilliseconds(150),
+                maxDelay: TimeSpan.FromSeconds(5),
+                maxRetries: 15,
+                shouldRetry: ShouldRetry,
+                loggerFactory: _loggerFactory),
+            DatabaseLockingBehaviorTypes.Pessimistic => throw new NotSupportedException("Pessimistic locking is not supported for PostgreSQL"),
+            _ => throw new ArgumentOutOfRangeException(nameof(lockingBehaviorType), lockingBehaviorType, null)
+        };
+    }
+
     private T? GetCustomDatabaseOption<T>(ICollection<CustomDatabaseOption>? options, string key, Func<string, T> converter, Func<T>? defaultValue = null)
     {
         if (options is null)
@@ -285,5 +307,42 @@ public sealed class PgSqlDatabaseProvider : IJellyfinDatabaseProvider
         _logger.LogInformation("PostgreSQL connection string: {ConnectionString}", safeConnectionString);
 
         return connectionBuilder;
+    }
+
+    private static bool ShouldRetry(Exception? exception)
+    {
+        // Handle PostgresException (server-side errors)
+        if (exception is PostgresException pgEx)
+        {
+            return pgEx.SqlState switch
+            {
+            // Retry Connection Exception (08xxx)
+            string code when code.StartsWith("08", StringComparison.Ordinal) => true,
+
+            // Retry Transaction Rollback (40xxx)
+            string code when code.StartsWith("40", StringComparison.Ordinal) => true,
+
+            // Retry Insufficient Resources (53xxx)
+            string code when code.StartsWith("53", StringComparison.Ordinal) => true,
+
+            // Retry Operator Intervention (57xxx)
+            string code when code.StartsWith("57", StringComparison.Ordinal) => true,
+
+            // Retry System Error (58xxx)
+            string code when code.StartsWith("58", StringComparison.Ordinal) => true,
+
+            // Do not retry other PostgreSQL exceptions by default
+            _ => false
+            };
+        }
+
+        // Handle InvalidOperationException (connection issues)
+        if (exception is InvalidOperationException invEx &&
+            invEx.Message.Contains("Connection is not open", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return false;
     }
 }

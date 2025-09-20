@@ -6,5 +6,5 @@
     <PluginName>PostgreSQL</PluginName>
     <ConnectionString></ConnectionString>
   </CustomProviderOptions>
-  <LockingBehavior>NoLock</LockingBehavior>
+  <LockingBehavior>Optimistic</LockingBehavior>
 </DatabaseConfigurationOptions>
