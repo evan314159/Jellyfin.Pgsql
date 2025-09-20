@@ -29,6 +29,7 @@ public sealed class PgSqlDatabaseProvider : IJellyfinDatabaseProvider
     private readonly ILogger<PgSqlDatabaseProvider> _logger;
     private readonly IApplicationPaths _applicationPaths;
     private readonly ILoggerFactory _loggerFactory;
+    private IEntityFrameworkCoreLockingBehavior? _lockingBehavior;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="PgSqlDatabaseProvider"/> class.
@@ -46,8 +47,15 @@ public sealed class PgSqlDatabaseProvider : IJellyfinDatabaseProvider
     public IDbContextFactory<JellyfinDbContext>? DbContextFactory { get; set; }
 
     /// <inheritdoc/>
+    public IEntityFrameworkCoreLockingBehavior LockingBehavior =>
+        _lockingBehavior ?? CreateLockingBehavior(DatabaseLockingBehaviorTypes.NoLock);
+
+    /// <inheritdoc/>
     public void Initialise(DbContextOptionsBuilder options, DatabaseConfigurationOptions databaseConfiguration)
     {
+        _lockingBehavior = CreateLockingBehavior(databaseConfiguration.LockingBehavior);
+        _lockingBehavior.Initialise(options);
+
         var customOptions = databaseConfiguration.CustomProviderOptions?.Options;
 
         var connectionBuilder = GetConnectionBuilder(customOptions);
@@ -241,8 +249,7 @@ public sealed class PgSqlDatabaseProvider : IJellyfinDatabaseProvider
         _logger.LogInformation("PostgreSQL database tables purged successfully");
     }
 
-    /// <inheritdoc/>
-    public IEntityFrameworkCoreLockingBehavior CreateLockingBehavior(DatabaseLockingBehaviorTypes lockingBehaviorType)
+    private IEntityFrameworkCoreLockingBehavior CreateLockingBehavior(DatabaseLockingBehaviorTypes lockingBehaviorType)
     {
         return lockingBehaviorType switch
         {
