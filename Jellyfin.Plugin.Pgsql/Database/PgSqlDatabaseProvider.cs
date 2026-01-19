@@ -74,6 +74,9 @@ public sealed class PgSqlDatabaseProvider : IJellyfinDatabaseProvider
             options.EnableSensitiveDataLogging(enableSensitiveDataLogging);
             _logger.LogInformation("EnableSensitiveDataLogging is enabled on PostgreSQL connection");
         }
+
+        options.ConfigureWarnings(warnings =>
+            warnings.Throw(Microsoft.EntityFrameworkCore.Diagnostics.RelationalEventId.MultipleCollectionIncludeWarning));
     }
 
     /// <inheritdoc/>
