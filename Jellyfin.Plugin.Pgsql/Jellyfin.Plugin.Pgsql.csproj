@@ -1,37 +1,36 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <RootNamespace>Jellyfin.Plugin.Pgsql</RootNamespace>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <Nullable>enable</Nullable>
     <AnalysisMode>AllEnabledByDefault</AnalysisMode>
-    <CodeAnalysisRuleSet>../jellyfin.ruleset</CodeAnalysisRuleSet>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Jellyfin.Controller" Version="10.11.3" PrivateAssets="all" />
-    <PackageReference Include="Jellyfin.Model" Version="10.11.3" PrivateAssets="all" />
-    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="9.0.4" />
-    <PackageReference Include="Npgsql" Version="9.0.4" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Abstractions" Version="9.0.10" PrivateAssets="all" />
-    <PackageReference Include="Microsoft.Extensions.Caching.Abstractions" Version="9.0.10" PrivateAssets="all" />
-    <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="9.0.10" PrivateAssets="all" />
-    <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="9.0.10" PrivateAssets="all" />
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="9.0.10" PrivateAssets="all" />
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="9.0.10" PrivateAssets="all" />
-    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.10" PrivateAssets="all" />
-    <PackageReference Include="Microsoft.Extensions.Logging" Version="9.0.10" PrivateAssets="all" />
-    <PackageReference Include="Microsoft.Extensions.Options" Version="9.0.10" PrivateAssets="all" />
-    <PackageReference Include="Microsoft.Extensions.Primitives" Version="9.0.10" PrivateAssets="all" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="9.0.10" PrivateAssets="all" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="9.0.10" PrivateAssets="all" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="9.0.10">
+    <ProjectReference Include="../jellyfin/MediaBrowser.Controller/MediaBrowser.Controller.csproj" PrivateAssets="all" />
+    <ProjectReference Include="../jellyfin/MediaBrowser.Model/MediaBrowser.Model.csproj" PrivateAssets="all" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.0" />
+    <PackageReference Include="Npgsql" Version="10.0.1" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Abstractions" Version="10.0.2" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.Extensions.Caching.Abstractions" Version="10.0.2" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.2" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="10.0.2" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.2" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.2" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.2" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.2" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.2" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.Extensions.Primitives" Version="10.0.2" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.2" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.2" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.2">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Tools" Version="9.0.10">
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Tools" Version="10.0.2">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
@@ -47,5 +46,15 @@
     <None Remove="Configuration\configPage.html" />
     <EmbeddedResource Include="Configuration\configPage.html" />
   </ItemGroup>
+
+  <!-- Only include essential plugin dependencies - exclude everything Jellyfin provides -->
+  <Target Name="ExcludeProvidedAssemblies" AfterTargets="ResolveAssemblyReferences">
+    <ItemGroup>
+      <!-- Keep only the plugin itself and Npgsql dependencies -->
+      <ReferenceCopyLocalPaths Remove="@(ReferenceCopyLocalPaths)"
+                               Condition="!$([System.String]::Copy('%(FileName)').StartsWith('Jellyfin.Plugin.Pgsql')) AND
+                                         !$([System.String]::Copy('%(FileName)').StartsWith('Npgsql'))" />
+    </ItemGroup>
+  </Target>
 
 </Project>

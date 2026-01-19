@@ -17,7 +17,7 @@ fi
 
 # Create the tar.gz with all required files
 # Copy files to avoid relative paths and set proper permissions
-cp ../jellyfin.ruleset ./
+cp ../.editorconfig ./
 cp ../Jellyfin.Plugin.Pgsql.sln ./
 cp ../build.yaml ./
 
@@ -41,7 +41,7 @@ cp ../Jellyfin.Plugin.Pgsql/Migrations/JellyfinDbContextModelSnapshot.cs ./Jelly
 chmod 755 Jellyfin.Plugin.Pgsql Jellyfin.Plugin.Pgsql/Configuration Jellyfin.Plugin.Pgsql/Database Jellyfin.Plugin.Pgsql/Migrations
 
 # Set permissions on files
-chmod 644 Dockerfile entrypoint.sh database.xml jellyfin.ruleset Jellyfin.Plugin.Pgsql.sln build.yaml \
+chmod 644 Dockerfile entrypoint.sh database.xml .editorconfig Jellyfin.Plugin.Pgsql.sln build.yaml \
     Jellyfin.Plugin.Pgsql/Jellyfin.Plugin.Pgsql.csproj \
     Jellyfin.Plugin.Pgsql/Plugin.cs \
     Jellyfin.Plugin.Pgsql/Configuration/PluginConfiguration.cs \
@@ -58,13 +58,13 @@ tar -czf "$PACKAGE_NAME" \
     Dockerfile \
     entrypoint.sh \
     database.xml \
-    jellyfin.ruleset \
+    .editorconfig \
     Jellyfin.Plugin.Pgsql.sln \
     build.yaml \
     Jellyfin.Plugin.Pgsql/
 
 # Clean up temporary files
-rm jellyfin.ruleset Jellyfin.Plugin.Pgsql.sln build.yaml
+rm .editorconfig Jellyfin.Plugin.Pgsql.sln build.yaml
 rm -rf Jellyfin.Plugin.Pgsql/
 
 # Show package size
