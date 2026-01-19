@@ -1,14 +1,19 @@
 # Build stage
 # Context hint: project root ../
 # sudo docker build -t ghcr.io/jpvenson/jellyfin.pgsql:10.11.0-1 -f ./Dockerfile ../
-FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 
 # Copy project files
-COPY jellyfin.ruleset .
+COPY .editorconfig .
 COPY Jellyfin.Plugin.Pgsql.sln .
 COPY build.yaml .
 COPY Jellyfin.Plugin.Pgsql/ ./Jellyfin.Plugin.Pgsql/
+COPY jellyfin-lock.patch .
+
+# Clone jellyfin and apply locking patch
+RUN git clone --depth 1 https://github.com/jellyfin/jellyfin.git && \
+    cd jellyfin && git apply ../jellyfin-lock.patch
 
 # Restore and publish
 RUN dotnet restore Jellyfin.Plugin.Pgsql.sln
@@ -31,8 +36,8 @@ RUN apt-get update && \
 COPY --from=build /app/publish/ /jellyfin-pgsql/plugin/
 COPY docker/entrypoint.sh /entrypoint.sh
 COPY docker/database.xml /jellyfin-pgsql/database.xml
-COPY docker/jellyfindb.load /jellyfin-pgsql/jellyfindb.load
-COPY docker/jellyfin.PgsqlMigrator.dll /jellyfin-pgsql/jellyfin.PgsqlMigrator.dll
+#COPY docker/jellyfindb.load /jellyfin-pgsql/jellyfindb.load
+#COPY docker/jellyfin.PgsqlMigrator.dll /jellyfin-pgsql/jellyfin.PgsqlMigrator.dll
 
 # Make entrypoint executable
 RUN chmod +x /entrypoint.sh
