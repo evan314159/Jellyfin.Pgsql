@@ -1,0 +1,471 @@
+diff --git a/Jellyfin.Server.Implementations/Extensions/ServiceCollectionExtensions.cs b/Jellyfin.Server.Implementations/Extensions/ServiceCollectionExtensions.cs
+index 932f9d625..480362764 100644
+--- a/Jellyfin.Server.Implementations/Extensions/ServiceCollectionExtensions.cs
++++ b/Jellyfin.Server.Implementations/Extensions/ServiceCollectionExtensions.cs
+@@ -12,6 +12,7 @@ using MediaBrowser.Controller.Configuration;
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.Configuration;
+ using Microsoft.Extensions.DependencyInjection;
++using Microsoft.Extensions.Logging;
+ using JellyfinDbProviderFactory = System.Func<System.IServiceProvider, Jellyfin.Database.Implementations.IJellyfinDatabaseProvider>;
+ 
+ namespace Jellyfin.Server.Implementations.Extensions;
+@@ -96,8 +97,7 @@ public static class ServiceCollectionExtensions
+                 // when nothing is setup via new Database configuration, fallback to SQLite with default settings.
+                 efCoreConfiguration = new DatabaseConfigurationOptions()
+                 {
+-                    DatabaseType = "Jellyfin-SQLite",
+-                    LockingBehavior = DatabaseLockingBehaviorTypes.NoLock
++                    DatabaseType = "Jellyfin-SQLite"
+                 };
+                 configurationManager.SaveConfiguration("database", efCoreConfiguration);
+             }
+@@ -123,25 +123,9 @@ public static class ServiceCollectionExtensions
+ 
+         serviceCollection.AddSingleton<IJellyfinDatabaseProvider>(providerFactory!);
+ 
+-        switch (efCoreConfiguration.LockingBehavior)
+-        {
+-            case DatabaseLockingBehaviorTypes.NoLock:
+-                serviceCollection.AddSingleton<IEntityFrameworkCoreLockingBehavior, NoLockBehavior>();
+-                break;
+-            case DatabaseLockingBehaviorTypes.Pessimistic:
+-                serviceCollection.AddSingleton<IEntityFrameworkCoreLockingBehavior, PessimisticLockBehavior>();
+-                break;
+-            case DatabaseLockingBehaviorTypes.Optimistic:
+-                serviceCollection.AddSingleton<IEntityFrameworkCoreLockingBehavior, OptimisticLockBehavior>();
+-                break;
+-        }
+-
+         serviceCollection.AddPooledDbContextFactory<JellyfinDbContext>((serviceProvider, opt) =>
+         {
+-            var provider = serviceProvider.GetRequiredService<IJellyfinDatabaseProvider>();
+-            provider.Initialise(opt, efCoreConfiguration);
+-            var lockingBehavior = serviceProvider.GetRequiredService<IEntityFrameworkCoreLockingBehavior>();
+-            lockingBehavior.Initialise(opt);
++            serviceProvider.GetRequiredService<IJellyfinDatabaseProvider>().Initialise(opt, efCoreConfiguration);
+         });
+ 
+         return serviceCollection;
+diff --git a/src/Jellyfin.Database/Jellyfin.Database.Implementations/IJellyfinDatabaseProvider.cs b/src/Jellyfin.Database/Jellyfin.Database.Implementations/IJellyfinDatabaseProvider.cs
+index 27dbeaba6..3d473bb3d 100644
+--- a/src/Jellyfin.Database/Jellyfin.Database.Implementations/IJellyfinDatabaseProvider.cs
++++ b/src/Jellyfin.Database/Jellyfin.Database.Implementations/IJellyfinDatabaseProvider.cs
+@@ -3,7 +3,9 @@ using System.Collections.Generic;
+ using System.Threading;
+ using System.Threading.Tasks;
+ using Jellyfin.Database.Implementations.DbConfiguration;
++using Jellyfin.Database.Implementations.Locking;
+ using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.Logging;
+ 
+ namespace Jellyfin.Database.Implementations;
+ 
+@@ -17,6 +19,11 @@ public interface IJellyfinDatabaseProvider
+     /// </summary>
+     IDbContextFactory<JellyfinDbContext>? DbContextFactory { get; set; }
+ 
++    /// <summary>
++    /// Gets the locking behavior for this database provider.
++    /// </summary>
++    IEntityFrameworkCoreLockingBehavior LockingBehavior { get; }
++
+     /// <summary>
+     /// Initialises jellyfins EFCore database access.
+     /// </summary>
+diff --git a/src/Jellyfin.Database/Jellyfin.Database.Implementations/JellyfinDbContext.cs b/src/Jellyfin.Database/Jellyfin.Database.Implementations/JellyfinDbContext.cs
+index 5163bff8b..dfba22963 100644
+--- a/src/Jellyfin.Database/Jellyfin.Database.Implementations/JellyfinDbContext.cs
++++ b/src/Jellyfin.Database/Jellyfin.Database.Implementations/JellyfinDbContext.cs
+@@ -20,9 +20,10 @@ namespace Jellyfin.Database.Implementations;
+ /// <param name="options">The database context options.</param>
+ /// <param name="logger">Logger.</param>
+ /// <param name="jellyfinDatabaseProvider">The provider for the database engine specific operations.</param>
+-/// <param name="entityFrameworkCoreLocking">The locking behavior.</param>
+-public class JellyfinDbContext(DbContextOptions<JellyfinDbContext> options, ILogger<JellyfinDbContext> logger, IJellyfinDatabaseProvider jellyfinDatabaseProvider, IEntityFrameworkCoreLockingBehavior entityFrameworkCoreLocking) : DbContext(options)
++public class JellyfinDbContext(DbContextOptions<JellyfinDbContext> options, ILogger<JellyfinDbContext> logger, IJellyfinDatabaseProvider jellyfinDatabaseProvider) : DbContext(options)
+ {
++    private readonly IEntityFrameworkCoreLockingBehavior _lockingBehavior = jellyfinDatabaseProvider.LockingBehavior;
++
+     /// <summary>
+     /// Gets the <see cref="DbSet{TEntity}"/> containing the access schedules.
+     /// </summary>
+@@ -262,7 +263,7 @@ public class JellyfinDbContext(DbContextOptions<JellyfinDbContext> options, ILog
+         try
+         {
+             var result = -1;
+-            await entityFrameworkCoreLocking.OnSaveChangesAsync(this, async () =>
++            await _lockingBehavior.OnSaveChangesAsync(this, async () =>
+             {
+                 result = await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken).ConfigureAwait(false);
+             }).ConfigureAwait(false);
+@@ -283,7 +284,7 @@ public class JellyfinDbContext(DbContextOptions<JellyfinDbContext> options, ILog
+         try
+         {
+             var result = -1;
+-            entityFrameworkCoreLocking.OnSaveChanges(this, () =>
++            _lockingBehavior.OnSaveChanges(this, () =>
+             {
+                 result = base.SaveChanges(acceptAllChangesOnSuccess);
+             });
+diff --git a/src/Jellyfin.Database/Jellyfin.Database.Implementations/Locking/NoLockBehavior.cs b/src/Jellyfin.Database/Jellyfin.Database.Implementations/Locking/NoLockBehavior.cs
+index 3b654f4c4..fabdd3e88 100644
+--- a/src/Jellyfin.Database/Jellyfin.Database.Implementations/Locking/NoLockBehavior.cs
++++ b/src/Jellyfin.Database/Jellyfin.Database.Implementations/Locking/NoLockBehavior.cs
+@@ -15,10 +15,10 @@ public class NoLockBehavior : IEntityFrameworkCoreLockingBehavior
+     /// <summary>
+     /// Initializes a new instance of the <see cref="NoLockBehavior"/> class.
+     /// </summary>
+-    /// <param name="logger">The Application logger.</param>
+-    public NoLockBehavior(ILogger<NoLockBehavior> logger)
++    /// <param name="loggerFactory">The logger factory.</param>
++    public NoLockBehavior(ILoggerFactory loggerFactory)
+     {
+-        _logger = logger;
++        _logger = loggerFactory.CreateLogger<NoLockBehavior>();
+     }
+ 
+     /// <inheritdoc/>
+diff --git a/src/Jellyfin.Database/Jellyfin.Database.Implementations/Locking/OptimisticLockBehavior.cs b/src/Jellyfin.Database/Jellyfin.Database.Implementations/Locking/OptimisticLockBehavior.cs
+index 76ffa5a9e..50238a7e5 100644
+--- a/src/Jellyfin.Database/Jellyfin.Database.Implementations/Locking/OptimisticLockBehavior.cs
++++ b/src/Jellyfin.Database/Jellyfin.Database.Implementations/Locking/OptimisticLockBehavior.cs
+@@ -10,6 +10,7 @@ using Microsoft.EntityFrameworkCore;
+ using Microsoft.EntityFrameworkCore.Diagnostics;
+ using Microsoft.Extensions.Logging;
+ using Polly;
++using Polly.Retry;
+ 
+ namespace Jellyfin.Database.Implementations.Locking;
+ 
+@@ -18,146 +19,141 @@ namespace Jellyfin.Database.Implementations.Locking;
+ /// </summary>
+ public class OptimisticLockBehavior : IEntityFrameworkCoreLockingBehavior
+ {
+-    private readonly Policy _writePolicy;
+-    private readonly AsyncPolicy _writeAsyncPolicy;
++    private readonly TimeSpan _medianFirstRetryDelay;
++    private readonly TimeSpan _maxDelay;
++    private readonly int _maxRetries;
++    private readonly Func<Exception?, bool> _shouldRetry;
+     private readonly ILogger<OptimisticLockBehavior> _logger;
++    private readonly ILoggerFactory _loggerFactory;
++    private readonly ResiliencePipeline _pipeline;
+ 
+     /// <summary>
+     /// Initializes a new instance of the <see cref="OptimisticLockBehavior"/> class.
+     /// </summary>
+-    /// <param name="logger">The application logger.</param>
+-    public OptimisticLockBehavior(ILogger<OptimisticLockBehavior> logger)
++    /// <param name="medianFirstRetryDelay">The median first delay for retry backoff.</param>
++    /// <param name="maxDelay">The maximum delay between retries.</param>
++    /// <param name="maxRetries">The maximum number of retries.</param>
++    /// <param name="shouldRetry">Function to determine if an exception should be retried.</param>
++    /// <param name="loggerFactory">The logger factory.</param>
++    public OptimisticLockBehavior(TimeSpan medianFirstRetryDelay, TimeSpan maxDelay, int maxRetries, Func<Exception?, bool> shouldRetry, ILoggerFactory loggerFactory)
+     {
+-        TimeSpan[] sleepDurations = [
+-            TimeSpan.FromMilliseconds(50),
+-            TimeSpan.FromMilliseconds(50),
+-            TimeSpan.FromMilliseconds(50),
+-            TimeSpan.FromMilliseconds(50),
+-            TimeSpan.FromMilliseconds(250),
+-            TimeSpan.FromMilliseconds(250),
+-            TimeSpan.FromMilliseconds(250),
+-            TimeSpan.FromMilliseconds(150),
+-            TimeSpan.FromMilliseconds(150),
+-            TimeSpan.FromMilliseconds(150),
+-            TimeSpan.FromMilliseconds(500),
+-            TimeSpan.FromMilliseconds(150),
+-            TimeSpan.FromMilliseconds(500),
+-            TimeSpan.FromMilliseconds(150),
+-            TimeSpan.FromSeconds(3)
+-        ];
+-
+-        Func<int, Context, TimeSpan> backoffProvider = (index, context) =>
+-        {
+-            var backoff = sleepDurations[index];
+-            return backoff + TimeSpan.FromMilliseconds(RandomNumberGenerator.GetInt32(0, (int)(backoff.TotalMilliseconds * .5)));
+-        };
+-
+-        _logger = logger;
+-        _writePolicy = Policy
+-            .HandleInner<Exception>(e =>
+-                e.Message.Contains("database is locked", StringComparison.InvariantCultureIgnoreCase) ||
+-                e.Message.Contains("database table is locked", StringComparison.InvariantCultureIgnoreCase))
+-            .WaitAndRetry(sleepDurations.Length, backoffProvider, RetryHandle);
+-        _writeAsyncPolicy = Policy
+-            .HandleInner<Exception>(e =>
+-                e.Message.Contains("database is locked", StringComparison.InvariantCultureIgnoreCase) ||
+-                e.Message.Contains("database table is locked", StringComparison.InvariantCultureIgnoreCase))
+-            .WaitAndRetryAsync(sleepDurations.Length, backoffProvider, RetryHandle);
+-
+-        void RetryHandle(Exception exception, TimeSpan timespan, int retryNo, Context context)
+-        {
+-            if (retryNo < sleepDurations.Length)
+-            {
+-                _logger.LogWarning("Operation failed retry {RetryNo}", retryNo);
+-            }
+-            else
++        _medianFirstRetryDelay = medianFirstRetryDelay;
++        _maxDelay = maxDelay;
++        _maxRetries = maxRetries;
++        _shouldRetry = shouldRetry;
++        _loggerFactory = loggerFactory;
++        _logger = _loggerFactory.CreateLogger<OptimisticLockBehavior>();
++
++        _pipeline = new ResiliencePipelineBuilder()
++            .AddRetry(new RetryStrategyOptions
+             {
+-                _logger.LogError(exception, "Operation failed retry {RetryNo}", retryNo);
+-            }
+-        }
++                ShouldHandle = args => new ValueTask<bool>(_shouldRetry(args.Outcome.Exception)),
++                MaxRetryAttempts = _maxRetries,
++                Delay = _medianFirstRetryDelay,
++                BackoffType = DelayBackoffType.Exponential,
++                UseJitter = true,
++                MaxDelay = _maxDelay,
++                OnRetry = args =>
++                {
++                    if (args.Outcome.Exception is Exception ex)
++                    {
++                        _logger.LogWarning(
++                            ex,
++                            "Database operation failed, will retry attempt {RetryAttempt} in {Delay}ms. Exception: {Message}",
++                            args.AttemptNumber + 1,
++                            args.RetryDelay.TotalMilliseconds,
++                            ex.Message);
++                    }
++
++                    return default;
++                }
++            })
++            .Build();
+     }
+ 
+     /// <inheritdoc/>
+     public void Initialise(DbContextOptionsBuilder optionsBuilder)
+     {
+         _logger.LogInformation("The database locking mode has been set to: Optimistic.");
+-        optionsBuilder.AddInterceptors(new RetryInterceptor(_writeAsyncPolicy, _writePolicy));
+-        optionsBuilder.AddInterceptors(new TransactionLockingInterceptor(_writeAsyncPolicy, _writePolicy));
++        optionsBuilder.AddInterceptors(new RetryInterceptor(_pipeline, _loggerFactory.CreateLogger<RetryInterceptor>()));
++        optionsBuilder.AddInterceptors(new TransactionLockingInterceptor(_pipeline, _loggerFactory.CreateLogger<TransactionLockingInterceptor>()));
+     }
+ 
+     /// <inheritdoc/>
+     public void OnSaveChanges(JellyfinDbContext context, Action saveChanges)
+     {
+-        _writePolicy.ExecuteAndCapture(saveChanges);
++        _pipeline.Execute(saveChanges);
+     }
+ 
+     /// <inheritdoc/>
+     public async Task OnSaveChangesAsync(JellyfinDbContext context, Func<Task> saveChanges)
+     {
+-        await _writeAsyncPolicy.ExecuteAndCaptureAsync(saveChanges).ConfigureAwait(false);
++        await _pipeline.ExecuteAsync(async _ => await saveChanges().ConfigureAwait(false)).ConfigureAwait(false);
+     }
+ 
+     private sealed class TransactionLockingInterceptor : DbTransactionInterceptor
+     {
+-        private readonly AsyncPolicy _asyncRetryPolicy;
+-        private readonly Policy _retryPolicy;
++        private readonly ResiliencePipeline _pipeline;
++
++        private readonly ILogger _logger;
+ 
+-        public TransactionLockingInterceptor(AsyncPolicy asyncRetryPolicy, Policy retryPolicy)
++        public TransactionLockingInterceptor(ResiliencePipeline pipeline, ILogger logger)
+         {
+-            _asyncRetryPolicy = asyncRetryPolicy;
+-            _retryPolicy = retryPolicy;
++            _pipeline = pipeline;
++            _logger = logger;
+         }
+ 
+         public override InterceptionResult<DbTransaction> TransactionStarting(DbConnection connection, TransactionStartingEventData eventData, InterceptionResult<DbTransaction> result)
+         {
+-            return InterceptionResult<DbTransaction>.SuppressWithResult(_retryPolicy.Execute(() => connection.BeginTransaction(eventData.IsolationLevel)));
++            return InterceptionResult<DbTransaction>.SuppressWithResult(_pipeline.Execute(() => connection.BeginTransaction(eventData.IsolationLevel)));
+         }
+ 
+         public override async ValueTask<InterceptionResult<DbTransaction>> TransactionStartingAsync(DbConnection connection, TransactionStartingEventData eventData, InterceptionResult<DbTransaction> result, CancellationToken cancellationToken = default)
+         {
+-            return InterceptionResult<DbTransaction>.SuppressWithResult(await _asyncRetryPolicy.ExecuteAsync(async () => await connection.BeginTransactionAsync(eventData.IsolationLevel, cancellationToken).ConfigureAwait(false)).ConfigureAwait(false));
++            return InterceptionResult<DbTransaction>.SuppressWithResult(await _pipeline.ExecuteAsync(async _ => await connection.BeginTransactionAsync(eventData.IsolationLevel, cancellationToken).ConfigureAwait(false), cancellationToken).ConfigureAwait(false));
+         }
+     }
+ 
+     private sealed class RetryInterceptor : DbCommandInterceptor
+     {
+-        private readonly AsyncPolicy _asyncRetryPolicy;
+-        private readonly Policy _retryPolicy;
++        private readonly ResiliencePipeline _pipeline;
++
++        private readonly ILogger _logger;
+ 
+-        public RetryInterceptor(AsyncPolicy asyncRetryPolicy, Policy retryPolicy)
++        public RetryInterceptor(ResiliencePipeline pipeline, ILogger logger)
+         {
+-            _asyncRetryPolicy = asyncRetryPolicy;
+-            _retryPolicy = retryPolicy;
++            _pipeline = pipeline;
++            _logger = logger;
+         }
+ 
+         public override InterceptionResult<int> NonQueryExecuting(DbCommand command, CommandEventData eventData, InterceptionResult<int> result)
+         {
+-            return InterceptionResult<int>.SuppressWithResult(_retryPolicy.Execute(command.ExecuteNonQuery));
++            return InterceptionResult<int>.SuppressWithResult(_pipeline.Execute(command.ExecuteNonQuery));
+         }
+ 
+         public override async ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(DbCommand command, CommandEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default)
+         {
+-            return InterceptionResult<int>.SuppressWithResult(await _asyncRetryPolicy.ExecuteAsync(async () => await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false)).ConfigureAwait(false));
++            return InterceptionResult<int>.SuppressWithResult(await _pipeline.ExecuteAsync(async _ => await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false), cancellationToken).ConfigureAwait(false));
+         }
+ 
+         public override InterceptionResult<object> ScalarExecuting(DbCommand command, CommandEventData eventData, InterceptionResult<object> result)
+         {
+-            return InterceptionResult<object>.SuppressWithResult(_retryPolicy.Execute(() => command.ExecuteScalar()!));
++            return InterceptionResult<object>.SuppressWithResult(_pipeline.Execute(() => command.ExecuteScalar()!));
+         }
+ 
+         public override async ValueTask<InterceptionResult<object>> ScalarExecutingAsync(DbCommand command, CommandEventData eventData, InterceptionResult<object> result, CancellationToken cancellationToken = default)
+         {
+-            return InterceptionResult<object>.SuppressWithResult((await _asyncRetryPolicy.ExecuteAsync(async () => await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)!).ConfigureAwait(false))!);
++            return InterceptionResult<object>.SuppressWithResult((await _pipeline.ExecuteAsync(async _ => await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), cancellationToken).ConfigureAwait(false))!);
+         }
+ 
+         public override InterceptionResult<DbDataReader> ReaderExecuting(DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result)
+         {
+-            return InterceptionResult<DbDataReader>.SuppressWithResult(_retryPolicy.Execute(command.ExecuteReader));
++            return InterceptionResult<DbDataReader>.SuppressWithResult(_pipeline.Execute(command.ExecuteReader));
+         }
+ 
+         public override async ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result, CancellationToken cancellationToken = default)
+         {
+-            return InterceptionResult<DbDataReader>.SuppressWithResult(await _asyncRetryPolicy.ExecuteAsync(async () => await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false)).ConfigureAwait(false));
++            return InterceptionResult<DbDataReader>.SuppressWithResult(await _pipeline.ExecuteAsync(async _ => await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false), cancellationToken).ConfigureAwait(false));
+         }
+     }
+ }
+diff --git a/src/Jellyfin.Database/Jellyfin.Database.Implementations/Locking/PessimisticLockBehavior.cs b/src/Jellyfin.Database/Jellyfin.Database.Implementations/Locking/PessimisticLockBehavior.cs
+index 404292e8e..e62badb0a 100644
+--- a/src/Jellyfin.Database/Jellyfin.Database.Implementations/Locking/PessimisticLockBehavior.cs
++++ b/src/Jellyfin.Database/Jellyfin.Database.Implementations/Locking/PessimisticLockBehavior.cs
+@@ -25,12 +25,11 @@ public class PessimisticLockBehavior : IEntityFrameworkCoreLockingBehavior
+     /// <summary>
+     /// Initializes a new instance of the <see cref="PessimisticLockBehavior"/> class.
+     /// </summary>
+-    /// <param name="logger">The application logger.</param>
+     /// <param name="loggerFactory">The logger factory.</param>
+-    public PessimisticLockBehavior(ILogger<PessimisticLockBehavior> logger, ILoggerFactory loggerFactory)
++    public PessimisticLockBehavior(ILoggerFactory loggerFactory)
+     {
+-        _logger = logger;
+         _loggerFactory = loggerFactory;
++        _logger = _loggerFactory.CreateLogger<PessimisticLockBehavior>();
+     }
+ 
+     private static ReaderWriterLockSlim DatabaseLock { get; } = new(LockRecursionPolicy.SupportsRecursion);
+diff --git a/src/Jellyfin.Database/Jellyfin.Database.Providers.Sqlite/Migrations/SqliteDesignTimeJellyfinDbFactory.cs b/src/Jellyfin.Database/Jellyfin.Database.Providers.Sqlite/Migrations/SqliteDesignTimeJellyfinDbFactory.cs
+index 4d420bf8c..3824a14d9 100644
+--- a/src/Jellyfin.Database/Jellyfin.Database.Providers.Sqlite/Migrations/SqliteDesignTimeJellyfinDbFactory.cs
++++ b/src/Jellyfin.Database/Jellyfin.Database.Providers.Sqlite/Migrations/SqliteDesignTimeJellyfinDbFactory.cs
+@@ -1,5 +1,5 @@
+ using Jellyfin.Database.Implementations;
+-using Jellyfin.Database.Implementations.Locking;
++using Jellyfin.Database.Implementations.DbConfiguration;
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.EntityFrameworkCore.Design;
+ using Microsoft.Extensions.Logging.Abstractions;
+@@ -20,8 +20,7 @@ namespace Jellyfin.Database.Providers.Sqlite.Migrations
+             return new JellyfinDbContext(
+                 optionsBuilder.Options,
+                 NullLogger<JellyfinDbContext>.Instance,
+-                new SqliteDatabaseProvider(null!, NullLogger<SqliteDatabaseProvider>.Instance),
+-                new NoLockBehavior(NullLogger<NoLockBehavior>.Instance));
++                new SqliteDatabaseProvider(null!, NullLoggerFactory.Instance));
+         }
+     }
+ }
+diff --git a/src/Jellyfin.Database/Jellyfin.Database.Providers.Sqlite/SqliteDatabaseProvider.cs b/src/Jellyfin.Database/Jellyfin.Database.Providers.Sqlite/SqliteDatabaseProvider.cs
+index da63df8e2..cee952388 100644
+--- a/src/Jellyfin.Database/Jellyfin.Database.Providers.Sqlite/SqliteDatabaseProvider.cs
++++ b/src/Jellyfin.Database/Jellyfin.Database.Providers.Sqlite/SqliteDatabaseProvider.cs
+@@ -7,6 +7,7 @@ using System.Threading;
+ using System.Threading.Tasks;
+ using Jellyfin.Database.Implementations;
+ using Jellyfin.Database.Implementations.DbConfiguration;
++using Jellyfin.Database.Implementations.Locking;
+ using MediaBrowser.Common.Configuration;
+ using Microsoft.Data.Sqlite;
+ using Microsoft.EntityFrameworkCore;
+@@ -24,24 +25,34 @@ public sealed class SqliteDatabaseProvider : IJellyfinDatabaseProvider
+     private const string BackupFolderName = "SQLiteBackups";
+     private readonly IApplicationPaths _applicationPaths;
+     private readonly ILogger<SqliteDatabaseProvider> _logger;
++    private readonly ILoggerFactory _loggerFactory;
++    private IEntityFrameworkCoreLockingBehavior? _lockingBehavior;
+ 
+     /// <summary>
+     /// Initializes a new instance of the <see cref="SqliteDatabaseProvider"/> class.
+     /// </summary>
+     /// <param name="applicationPaths">Service to construct the fallback when the old data path configuration is used.</param>
+-    /// <param name="logger">A logger.</param>
+-    public SqliteDatabaseProvider(IApplicationPaths applicationPaths, ILogger<SqliteDatabaseProvider> logger)
++    /// <param name="loggerFactory">The logger factory.</param>
++    public SqliteDatabaseProvider(IApplicationPaths applicationPaths, ILoggerFactory loggerFactory)
+     {
+         _applicationPaths = applicationPaths;
+-        _logger = logger;
++        _loggerFactory = loggerFactory;
++        _logger = _loggerFactory.CreateLogger<SqliteDatabaseProvider>();
+     }
+ 
+     /// <inheritdoc/>
+     public IDbContextFactory<JellyfinDbContext>? DbContextFactory { get; set; }
+ 
++    /// <inheritdoc/>
++    public IEntityFrameworkCoreLockingBehavior LockingBehavior =>
++        _lockingBehavior ?? CreateLockingBehavior(DatabaseLockingBehaviorTypes.NoLock);
++
+     /// <inheritdoc/>
+     public void Initialise(DbContextOptionsBuilder options, DatabaseConfigurationOptions databaseConfiguration)
+     {
++        _lockingBehavior = CreateLockingBehavior(databaseConfiguration.LockingBehavior);
++        _lockingBehavior.Initialise(options);
++
+         static T? GetOption<T>(ICollection<CustomDatabaseOption>? options, string key, Func<string, T> converter, Func<T>? defaultValue = null)
+         {
+             if (options is null)
+@@ -205,4 +216,26 @@ public sealed class SqliteDatabaseProvider : IJellyfinDatabaseProvider
+ 
+         await dbContext.Database.ExecuteSqlRawAsync(deleteAllQuery).ConfigureAwait(false);
+     }
++
++    private IEntityFrameworkCoreLockingBehavior CreateLockingBehavior(DatabaseLockingBehaviorTypes lockingBehaviorType)
++    {
++        return lockingBehaviorType switch
++        {
++            DatabaseLockingBehaviorTypes.NoLock => new NoLockBehavior(_loggerFactory),
++            DatabaseLockingBehaviorTypes.Pessimistic => new PessimisticLockBehavior(_loggerFactory),
++            DatabaseLockingBehaviorTypes.Optimistic => new OptimisticLockBehavior(
++                medianFirstRetryDelay: TimeSpan.FromMilliseconds(10),
++                maxDelay: TimeSpan.FromMilliseconds(500),
++                maxRetries: 15,
++                shouldRetry: ShouldRetry,
++                loggerFactory: _loggerFactory),
++            _ => throw new ArgumentOutOfRangeException(nameof(lockingBehaviorType), lockingBehaviorType, null)
++        };
++    }
++
++    private static bool ShouldRetry(Exception? exception)
++    {
++        return exception?.Message.Contains("database is locked", StringComparison.InvariantCultureIgnoreCase) == true ||
++               exception?.Message.Contains("database is busy", StringComparison.InvariantCultureIgnoreCase) == true;
++    }
+ }
