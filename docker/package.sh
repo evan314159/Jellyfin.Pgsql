@@ -70,7 +70,6 @@ chmod 644 Dockerfile docker/entrypoint.sh docker/database.xml .editorconfig Jell
 
 tar -czf "$PACKAGE_NAME" \
     --uid=0 --gid=0 \
-    --no-mac-metadata \
     Dockerfile \
     docker/ \
     jellyfin-lock.patch \
